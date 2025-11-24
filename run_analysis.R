@@ -28,7 +28,7 @@ source("src/portfolio.R")
 
 prepare_performance_data <- function(weights, returns) {
   # weights: the weights_vector from above function
-  # returns: xts object with historical returns (columns matching weight names)  
+  # returns: xts object with historical returns (columns matching weight names)
   if (!all(names(weights) %in% colnames(returns))) {
     warning("Some assets in portfolio not found in returns data")
   }
@@ -53,20 +53,29 @@ on.exit(DBI::dbDisconnect(portfolio$db))
 
 # Calculate logarithmic returns
 log_returns <- calculate_log_returns(portfolio$db)
-#if (!is.null(log_returns)) {
-#  DBI::dbWriteTable(portfolio$db, "log_returns", log_returns, overwrite = TRUE)
-#}
 
 # Calculate weights
 weights <- calculate_portfolio_weights(portfolio$assets)
 
 # Calculate historical returns
 perf_data <- prepare_performance_data(weights$weights_vector, log_returns)
-portfolio_returns <- PerformanceAnalytics::Return.portfolio(perf_data$returns, weights = perf_data$weights)
+portfolio_returns <- PerformanceAnalytics::Return.portfolio(perf_data$returns,
+                                                            weights = perf_data$weights)
 
-# Calculate historical VaR
+# Calculate VaR
 historical_var <- PerformanceAnalytics::VaR(portfolio_returns,
-                     p = 0.95,
-                     method = "historical",
-                     portfolio_method = "single")
-print(historical_var * weights$total_portfolio_value)
+                                            p = 0.95,
+                                            method = "historical",
+                                            portfolio_method = "single") * weights$total_portfolio_value
+# Calculate the expected shortfall
+es <- PerformanceAnalytics::ES(portfolio_returns, p = 0.95) * weights$total_portfolio_value
+mean <- mean(portfolio_returns)
+volatility <- sd(portfolio_returns)
+skewness <- PerformanceAnalytics::skewness(portfolio_returns)
+kurtosis <- PerformanceAnalytics::kurtosis(portfolio_returns)
+logger::log_info("Historical VaR: {historical_var}")
+logger::log_info("Expected shortfall: {es}")
+logger::log_info("Mean: {mean}")
+logger::log_info("Volatility: {volatility}")
+logger::log_info("Skewness: {skewness}")
+logger::log_info("Kurtosis: {kurtosis}")

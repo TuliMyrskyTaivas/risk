@@ -4,7 +4,6 @@ calculate_log_returns <- function(db_connection, price_table = "data") {
   # Read price data
   price_data <- DBI::dbGetQuery(db_connection, 
                                 paste("SELECT * FROM", price_table))
-
   if (nrow(price_data) == 0) {
     warning("No price data found")
     return(NULL)
@@ -48,10 +47,8 @@ calculate_log_returns <- function(db_connection, price_table = "data") {
         names_to = "code",
         values_to = "log_return"
       )
-
-    # return(log_returns_long)
-    return(log_returns)
-  } else {
-    return(NULL)
+    DBI::dbWriteTable(db_connection, "log_returns",
+                      log_returns_long, overwrite = TRUE)
   }
+  return(log_returns)
 }

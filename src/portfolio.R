@@ -63,7 +63,8 @@ load_portfolio_data <- function(file) {
       logger::log_info("{nrow(new_data)} new items available")
       print(new_data)
       if (DBI::dbExistsTable(db, "data")) {
-        DBI::dbWriteTable(db, "data", new_data, append = TRUE)
+        DBI::dbWriteTable(db, "data", as.data.frame(new_data),
+                          append = TRUE, row.names = FALSE)
       } else {
         dplyr::copy_to(db, new_data, temporary = FALSE, name = "data")
       }

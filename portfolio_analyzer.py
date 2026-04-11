@@ -134,6 +134,9 @@ class PortfolioAnalyzer:
                 raise ValueError("No data found in the specified table range")
 
             self.portfolio_data = pd.DataFrame(data_rows, columns=headers)
+            # Filter out rows with zero amount
+            if 'Amount' in self.portfolio_data.columns:
+                self.portfolio_data = self.portfolio_data[self.portfolio_data['Amount'] != '0']
             self.logger.info(f"Loaded named table/range 'Assets' with {len(self.portfolio_data)} rows")            
             self.logger.debug(f"Portfolio data:\n{self.portfolio_data.head()}")
 
@@ -272,15 +275,25 @@ class PortfolioAnalyzer:
                         returns = prices.pct_change().dropna()
                         if not returns.empty:
                             historical_returns[ticker] = returns
-                            self.logger.debug(f"{ticker}: {len(returns)} historical returns loaded")
+                            self.logger.debug(f"{ticker}: {len(returns)} historical returns loaded")                            
                         else:
                             self.logger.warning(f"{ticker}: insufficient historical price data")
                     else:
                         self.logger.warning(f"{ticker}: no historical prices available")
 
         if historical_returns:
-            returns_df = pd.DataFrame(historical_returns)
-            returns_df = returns_df.dropna(axis=0, how='any')
+            try:                
+                # Handle duplicate indices by removing duplicates from each series
+                clean_returns = {}
+                for ticker, returns_series in historical_returns.items():
+                    # Remove duplicate index values, keeping the first occurrence                    
+                    clean_returns[ticker] = returns_series[~returns_series.index.duplicated(keep='first')]
+                
+                returns_df = pd.DataFrame(clean_returns)
+                returns_df = returns_df.dropna(axis=0, how='any')
+            except Exception as e:
+                self.logger.warning(f"Error creating returns DataFrame: {e}. Falling back to simulation mode.")
+                returns_df = pd.DataFrame()
 
             if not returns_df.empty:
                 # Determine portfolio weights for tickers with historical data
@@ -300,13 +313,8 @@ class PortfolioAnalyzer:
                 else:
                     weights = np.ones(len(returns_df.columns), dtype=float) / len(returns_df.columns)
 
-                portfolio_returns = returns_df.dot(weights)
-                if len(portfolio_returns) >= n_simulations:
-                    self.returns_data = portfolio_returns.tail(n_simulations).values
-                else:
-                    self.returns_data = np.random.choice(portfolio_returns.values, size=n_simulations, replace=True)
-
-                self.returns_data = self.returns_data * np.sqrt(time_horizon)
+                portfolio_returns = returns_df.dot(weights)                                
+                self.returns_data = portfolio_returns.values * np.sqrt(time_horizon)
                 return self.returns_data
 
         # Fallback: simulate based on portfolio return percentages or Russian market assumptions

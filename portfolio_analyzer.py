@@ -257,7 +257,7 @@ class PortfolioAnalyzer:
         
         self.logger.info(f"Updated {updated_count} prices from MOEX")
     
-    def generate_returns_data(self, n_simulations: int = 10000, time_horizon : int = 1):
+    def generate_returns_data(self, time_horizon : int = 1):
         """
         Generate returns data for VaR calculation.
         Prefer actual historical returns from MOEX if available.
@@ -265,99 +265,65 @@ class PortfolioAnalyzer:
         portfolio_returns = None
         historical_returns : Dict[str, pd.Series] = {}
 
-        if 'Code' in self.portfolio_data.columns:
-            self.logger.info("Fetching historical prices for returns calculation...")
-            for idx, row in self.portfolio_data.iterrows():
-                ticker = row['Code']
-                if pd.notna(ticker) and ticker:
-                    prices = self.moex.get_historical_prices(ticker)
-                    if prices is not None and len(prices) > 1:
-                        returns = prices.pct_change().dropna()
-                        if not returns.empty:
-                            historical_returns[ticker] = returns
-                            self.logger.debug(f"{ticker}: {len(returns)} historical returns loaded")                            
-                        else:
-                            self.logger.warning(f"{ticker}: insufficient historical price data")
+        if 'Code' not in self.portfolio_data.columns:
+            raise ValueError("Cannot generate returns data: 'Code' column not found in portfolio data")
+
+        self.logger.info("Fetching historical prices for returns calculation...")
+        for _, row in self.portfolio_data.iterrows():
+            ticker = row['Code']
+            if pd.notna(ticker) and ticker:
+                prices = self.moex.get_historical_prices(ticker)
+                if prices is not None and len(prices) > 1:
+                    returns = prices.pct_change().dropna()
+                    if not returns.empty:
+                        historical_returns[ticker] = returns
+                        self.logger.debug(f"{ticker}: {len(returns)} historical returns loaded")                            
                     else:
-                        self.logger.warning(f"{ticker}: no historical prices available")
+                        self.logger.warning(f"{ticker}: insufficient historical price data")
+                else:
+                    self.logger.warning(f"{ticker}: no historical prices available")
 
-        if historical_returns:
-            try:                
-                # Handle duplicate indices by removing duplicates from each series
-                clean_returns = {}
-                for ticker, returns_series in historical_returns.items():
-                    # Remove duplicate index values, keeping the first occurrence                    
-                    clean_returns[ticker] = returns_series[~returns_series.index.duplicated(keep='first')]
+        if not historical_returns:
+            raise ValueError("No historical returns data available for any assets. Cannot generate returns data.")
+
+        # Handle duplicate indices by removing duplicates from each series
+        clean_returns : Dict[str, pd.Series] = {}
+        for ticker, returns_series in historical_returns.items():
+            # Remove duplicate index values, keeping the first occurrence                    
+            clean_returns[ticker] = returns_series[~returns_series.index.duplicated(keep='first')]
                 
-                returns_df = pd.DataFrame(clean_returns)
-                returns_df = returns_df.dropna(axis=0, how='any')
-            except Exception as e:
-                self.logger.warning(f"Error creating returns DataFrame: {e}. Falling back to simulation mode.")
-                returns_df = pd.DataFrame()
+        returns_df = pd.DataFrame(clean_returns)
+        returns_df = returns_df.dropna(axis=0, how='any')
+        if returns_df.empty:
+            raise ValueError("No valid historical returns data available after cleaning. Cannot generate returns data.")
 
-            if not returns_df.empty:
-                # Determine portfolio weights for tickers with historical data
-                if 'Weight' in self.portfolio_data.columns:
-                    weights = []
-                    for ticker in returns_df.columns:
-                        mask = self.portfolio_data['Code'] == ticker
-                        weights.append(self.portfolio_data.loc[mask, 'Weight'].sum())
-                    weights = np.array(weights, dtype=float)
-                else:
-                    weights = np.ones(len(returns_df.columns), dtype=float)
-
-                weights = np.nan_to_num(weights, nan=0.0)
-                weights_sum = weights.sum()
-                if weights_sum > 0:
-                    weights = weights / weights_sum
-                else:
-                    weights = np.ones(len(returns_df.columns), dtype=float) / len(returns_df.columns)
-
-                portfolio_returns = returns_df.dot(weights)                                
-                self.returns_data = portfolio_returns.values * np.sqrt(time_horizon)
-                return self.returns_data
-
-        # Fallback: simulate based on portfolio return percentages or Russian market assumptions
-        if 'Return %' in self.portfolio_data.columns:
-            asset_returns = self.portfolio_data['Return %'].dropna()
-            asset_returns = asset_returns[np.isfinite(asset_returns)] / 100
-
-            if len(asset_returns) > 5:
-                mean_return = asset_returns.mean()
-                std_return = asset_returns.std()
-            else:
-                mean_return = 0.0005
-                std_return = 0.015
-        else:
-            mean_return = 0.0005
-            std_return = 0.015
-
-        if not np.isfinite(std_return) or std_return <= 0:
-            std_return = 0.015
-
-        n_assets = len(self.portfolio_data)
+        # Determine portfolio weights for tickers with historical data
         if 'Weight' in self.portfolio_data.columns:
-            weights = self.portfolio_data['Weight'].values
-            weights = np.nan_to_num(weights, nan=0.0)
-            weights = weights / weights.sum() if weights.sum() > 0 else np.ones(n_assets) / n_assets
+            weights = []
+            for ticker in returns_df.columns:
+                mask = self.portfolio_data['Code'] == ticker
+                weights.append(self.portfolio_data.loc[mask, 'Weight'].sum())
+            weights = np.array(weights, dtype=float)
         else:
-            weights = np.ones(n_assets) / n_assets
+            weights = np.ones(len(returns_df.columns), dtype=float)
 
-        portfolio_returns = []
-        for _ in range(n_simulations):
-            asset_sim_returns = np.random.normal(mean_return, std_return, n_assets)
-            portfolio_return = np.sum(weights * asset_sim_returns)
-            portfolio_returns.append(portfolio_return)
+        weights = np.nan_to_num(weights, nan=0.0)
+        weights_sum = weights.sum()
+        if weights_sum > 0:
+            weights = weights / weights_sum
+        else:
+            weights = np.ones(len(returns_df.columns), dtype=float) / len(returns_df.columns)
 
-        self.returns_data = np.array(portfolio_returns) * np.sqrt(time_horizon)
-        return self.returns_data    
+        portfolio_returns = returns_df.dot(weights)                                
+        self.returns_data = portfolio_returns.values * np.sqrt(time_horizon)
+        return self.returns_data        
     
-    def calculate_risk_metrics(self):
+    def calculate_risk_metrics(self) -> Dict[str, Dict[str, float]]:
         """Calculate all risk metrics"""
         if self.returns_data is None:
             self.generate_returns_data()
         
-        risk_metrics = {}
+        risk_metrics : Dict[str, Dict[str, float]] = {}
         total_value = self.report_data.get('total_value', 1)
         
         # VaR at different confidence levels

@@ -81,7 +81,7 @@ class MOEXDataFetcher:
             df : Optional[pd.DataFrame] = ticker_obj.candles(start=start, end=end, period="1D")
             if df is not None and not df.empty:
                 latest_price = df.iloc[-1]["close"]
-                now_iso = datetime.now().isoformat()
+                now_iso = datetime.now().strftime("%Y-%m-%d")
                 self._cache_price(ticker, now_iso, float(latest_price))
                 return float(latest_price)
             return None
@@ -90,6 +90,7 @@ class MOEXDataFetcher:
             return None
 
     def get_historical_prices(self, ticker: str, days: int = 252) -> Optional[pd.Series]:
+        self.logger.debug(f"Requesting historical prices for {ticker} for the last {days} days")
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days + 30)
         cached_series = self._get_cached_historical_prices(ticker, start_date, end_date)
@@ -103,7 +104,16 @@ class MOEXDataFetcher:
         else:
             fetch_start = cached_series.index.max() + pd.Timedelta(days=1)
 
+        # Ensure that cached_series covers the required range
+        if cached_series is not None and not cached_series.empty:
+            if cached_series.index.min() > start_date:
+                fetch_start = start_date
+            else:
+                fetch_start = cached_series.index.max() + pd.Timedelta(days=1)
+
         fetch_end = end_date
+        self.logger.debug(f"Cached historical prices for {ticker} cover from {cached_series.index.min().date() if cached_series is not None and not cached_series.empty else 'N/A'} to {cached_series.index.max().date() if cached_series is not None and not cached_series.empty else 'N/A'}")
+        self.logger.debug(f"Need to fetch historical prices for {ticker} from {fetch_start.date()} to {fetch_end.date()}")
 
         if fetch_start >= fetch_end:
             # already have enough

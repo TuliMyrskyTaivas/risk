@@ -564,35 +564,30 @@ def generate_pdf_report(analyzer: PortfolioAnalyzer, filename: str = "portfolio_
             
             # Asset Allocation
             if 'allocation_pie' in vis_data:
-                pdf.chapter_title("Asset Allocation Analysis")
-                pdf.cell(0, 10, "Portfolio Distribution by Asset Types:", 0, 1)
+                pdf.add_page()
+                pdf.chapter_title("Asset Allocation Analysis")                
                 
                 fig = vis_data['allocation_pie']
                 img_path = os.path.join(temp_dir, 'allocation_pie.png')
                 fig.savefig(img_path, format='png', dpi=150, bbox_inches='tight')
                 image_files.append(img_path)
                 
-                pdf.image(img_path, x=30, y=None, w=150)
-                pdf.ln(80)
+                pdf.image(img_path, x=20, y=None, w=100)                
                 plt.close(fig)
             
             # Top 10 assets
-            if 'top_assets' in vis_data:
-                pdf.add_page()
-                pdf.chapter_title("Top 10 Assets by Value")
-                
+            if 'top_assets' in vis_data:                
                 fig = vis_data['top_assets']
                 img_path = os.path.join(temp_dir, 'top_assets.png')
                 fig.savefig(img_path, format='png', dpi=150, bbox_inches='tight')
                 image_files.append(img_path)
                 
-                pdf.image(img_path, x=20, y=None, w=170)
-                pdf.ln(70)
+                pdf.image(img_path, x=20, y=None, w=170)                
                 plt.close(fig)
             
+            pdf.add_page()
             # Returns Distribution
-            if 'returns_dist' in vis_data:
-                pdf.add_page()
+            if 'returns_dist' in vis_data:                
                 pdf.chapter_title("Returns Distribution Analysis")
                 
                 fig = vis_data['returns_dist']
@@ -600,13 +595,11 @@ def generate_pdf_report(analyzer: PortfolioAnalyzer, filename: str = "portfolio_
                 fig.savefig(img_path, format='png', dpi=150, bbox_inches='tight')
                 image_files.append(img_path)
                 
-                pdf.image(img_path, x=20, y=None, w=170)
-                pdf.ln(70)
+                pdf.image(img_path, x=20, y=None, w=170)                
                 plt.close(fig)
             
             # Profit/Loss Analysis
-            if 'profit_loss' in vis_data:
-                pdf.add_page()
+            if 'profit_loss' in vis_data:                
                 pdf.chapter_title("Profit/Loss Analysis")
                 
                 fig = vis_data['profit_loss']
@@ -614,8 +607,7 @@ def generate_pdf_report(analyzer: PortfolioAnalyzer, filename: str = "portfolio_
                 fig.savefig(img_path, format='png', dpi=150, bbox_inches='tight')
                 image_files.append(img_path)
                 
-                pdf.image(img_path, x=20, y=None, w=170)
-                pdf.ln(70)
+                pdf.image(img_path, x=20, y=None, w=170)                
                 plt.close(fig)
         
         # Asset Type Analysis Table
@@ -648,10 +640,7 @@ def generate_pdf_report(analyzer: PortfolioAnalyzer, filename: str = "portfolio_
             pdf.add_table("Asset Type Metrics", display_data, col_widths)
         
         # Detailed Asset Table
-        if analyzer.portfolio_data is not None:
-            pdf.add_page()
-            pdf.chapter_title("Detailed Asset List")
-            
+        if analyzer.portfolio_data is not None:            
             # Select columns to display
             display_cols = []
             for col in ['Name', 'Amount', 'Current price', 

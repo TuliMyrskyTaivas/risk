@@ -350,7 +350,7 @@ class PortfolioAnalyzer:
         kurtosis = stats.kurtosis(self.returns_data)
         
         # Sharpe ratio (using Russian risk-free rate - approximate)
-        risk_free_rate = 0.15 / 252  # 15% annual key rate / 252 days
+        risk_free_rate = self.moex.fetch_russian_risk_free_rate(1.0) / 252  # annual risk-free rate / 252 days
         mean_daily_return = np.mean(self.returns_data)
         sharpe_ratio = (mean_daily_return - risk_free_rate) / np.std(self.returns_data) * np.sqrt(252)
         
@@ -362,6 +362,7 @@ class PortfolioAnalyzer:
         
         risk_metrics['statistics'] = {
             'volatility': volatility * 100,
+            'risk_free_rate': risk_free_rate * 100 * 252,  # annualized risk-free rate
             'skewness': skewness,
             'kurtosis': kurtosis,
             'sharpe_ratio': sharpe_ratio,
@@ -493,7 +494,7 @@ def generate_pdf_report(analyzer: PortfolioAnalyzer, filename: str = "portfolio_
 
     # Create a temporary directory for images
     temp_dir = tempfile.mkdtemp()
-    image_files = []    
+    image_files : list[str] = []    
     
     try:
         # Create PDF
@@ -522,35 +523,40 @@ def generate_pdf_report(analyzer: PortfolioAnalyzer, filename: str = "portfolio_
         pdf.chapter_body(summary_text)
         
         # Risk Metrics
-        if 'risk_metrics' in analyzer.report_data:
-            pdf.chapter_title("Risk Metrics Analysis")
+        if 'risk_metrics' not in analyzer.report_data:
+            raise ValueError("Risk metrics data not found in report data. Cannot generate risk analysis section.")
+        
+        pdf.chapter_title("Risk Metrics Analysis")
             
-            risk_metrics = analyzer.report_data['risk_metrics']
-            risk_text = f"""
-            Value at Risk (VaR) - Maximum Expected Loss over 1 day at different confidence levels:
-            - 90% VaR: {risk_metrics['VaR_90']['percentage']:.2f}% ({risk_metrics['VaR_90']['value']:,.2f} RUB)
-            - 95% VaR: {risk_metrics['VaR_95']['percentage']:.2f}% ({risk_metrics['VaR_95']['value']:,.2f} RUB)
-            - 99% VaR: {risk_metrics['VaR_99']['percentage']:.2f}% ({risk_metrics['VaR_99']['value']:,.2f} RUB)
+        risk_metrics = analyzer.report_data['risk_metrics']
+        risk_text = f"""
+        Value at Risk (VaR) - Maximum Expected Loss over 1 day at different confidence levels:
+        - 90% VaR: {risk_metrics['VaR_90']['percentage']:.2f}% ({risk_metrics['VaR_90']['value']:,.2f} RUB)
+        - 95% VaR: {risk_metrics['VaR_95']['percentage']:.2f}% ({risk_metrics['VaR_95']['value']:,.2f} RUB)
+        - 99% VaR: {risk_metrics['VaR_99']['percentage']:.2f}% ({risk_metrics['VaR_99']['value']:,.2f} RUB)
             
-            Expected Shortfall (Expected Shortfall - ES) - Average Loss in the Worst Cases:
-            - 90% ES: {risk_metrics['ES_90']['percentage']:.2f}% ({risk_metrics['ES_90']['value']:,.2f} RUB)
-            - 95% ES: {risk_metrics['ES_95']['percentage']:.2f}% ({risk_metrics['ES_95']['value']:,.2f} RUB)
-            - 99% ES: {risk_metrics['ES_99']['percentage']:.2f}% ({risk_metrics['ES_99']['value']:,.2f} RUB)
-            """
-            pdf.chapter_body(risk_text)
+        Expected Shortfall (Expected Shortfall - ES) - Average Loss in the Worst Cases:
+        - 90% ES: {risk_metrics['ES_90']['percentage']:.2f}% ({risk_metrics['ES_90']['value']:,.2f} RUB)
+        - 95% ES: {risk_metrics['ES_95']['percentage']:.2f}% ({risk_metrics['ES_95']['value']:,.2f} RUB)
+        - 99% ES: {risk_metrics['ES_99']['percentage']:.2f}% ({risk_metrics['ES_99']['value']:,.2f} RUB)
+        """
+        pdf.chapter_body(risk_text)
             
-            # Statistical Measures
-            if 'statistics' in risk_metrics:
-                stats = risk_metrics['statistics']
-                stats_text = f"""
-                Statistical Measures:
-                - Annual Volatility: {stats['volatility']:.2f}%
-                - Skewness: {stats['skewness']:.3f}
-                - Kurtosis: {stats['kurtosis']:.3f}
-                - Sharpe Ratio: {stats['sharpe_ratio']:.2f}
-                - Maximum Drawdown: {stats['max_drawdown']:.2f}%
-                """
-                pdf.chapter_body(stats_text)
+        # Statistical Measures
+        if 'statistics' not in risk_metrics:
+            raise ValueError("Statistics data not found in risk metrics. Cannot generate risk analysis section.")
+
+        stats = risk_metrics['statistics']
+        stats_text = f"""
+        Statistical Measures:
+        - Annual Volatility: {stats['volatility']:.2f}%
+        - Risk-Free Rate (Annualized): {stats['risk_free_rate']:.2f}%
+        - Skewness: {stats['skewness']:.3f}
+        - Kurtosis: {stats['kurtosis']:.3f}
+        - Sharpe Ratio: {stats['sharpe_ratio']:.2f}
+        - Maximum Drawdown: {stats['max_drawdown']:.2f}%
+        """
+        pdf.chapter_body(stats_text)
         
         # Add visualizations
         if 'visualizations' in analyzer.report_data:
@@ -648,14 +654,14 @@ def generate_pdf_report(analyzer: PortfolioAnalyzer, filename: str = "portfolio_
             
             # Select columns to display
             display_cols = []
-            for col in ['Name', 'Type', 'Code', 'Amount', 'Current price', 
+            for col in ['Name', 'Amount', 'Current price', 
                        'Current value', 'Return', 'Return %', 'P/L', 'Weight']:
                 if col in analyzer.portfolio_data.columns:
                     display_cols.append(col)
             
             if display_cols:
                 asset_table = analyzer.portfolio_data[display_cols].copy()
-                asset_table = asset_table.head(50)  # Limit to 50 rows for PDF
+                asset_table = asset_table.sort_values(by='Weight', ascending=False).head(50)  # Limit to 50 rows for PDF
                 
                 # Format columns
                 formatted_table = asset_table.copy()

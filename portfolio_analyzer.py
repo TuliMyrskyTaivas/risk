@@ -465,24 +465,39 @@ class PortfolioAnalyzer:
                 # Get top profitable and top unprofitable
                 profitable = self.portfolio_data[self.portfolio_data['Return'] > 0].nlargest(15, 'Return')[['Name', 'Return']]
                 unprofitable = self.portfolio_data[self.portfolio_data['Return'] < 0].nsmallest(15, 'Return')[['Name', 'Return']]
+                max_profitable = profitable['Return'].max() if not profitable.empty else 0
+                min_unprofitable = unprofitable['Return'].min() if not unprofitable.empty else 0
             
                 if len(profitable) > 0 or len(unprofitable) > 0:
                     pl_sorted = pd.concat([profitable, unprofitable])
                 
-                    if len(pl_sorted) > 0:
-                        colors = ['green' if x > 0 else 'red' for x in pl_sorted['Return']]
-                        bars = ax5.barh(range(len(pl_sorted)), pl_sorted['Return'].values, color=colors)
-                        ax5.set_yticks(range(len(pl_sorted)))
-                        ax5.set_yticklabels(pl_sorted['Name'].values)
-                        ax5.set_xlabel('Profit/Loss (RUB)', fontsize=12)
-                        ax5.set_title('Top 15 Profitable and Unprofitable Assets', fontsize=16, fontweight='bold')
+                    # Create color intensity based on profitability                        
+                    # Normalize positive and negative returns separately for intensity
+                    colors : list[tuple[float, float, float]] = []
+                    for val in pl_sorted['Return'].values:
+                        if val > 0:
+                            # Map profitable returns to green intensity (0=light, 1=dark)
+                            intensity = val / max_profitable if max_profitable > 0 else 0
+                            # Create shades of green from light to dark
+                            colors.append((0, 0.4 + 0.6 * intensity, 0))  # RGB with varying green
+                        else:
+                            # Map unprofitable returns to red intensity (0=light, 1=dark)
+                            intensity = val / min_unprofitable if min_unprofitable < 0 else 0
+                            # Create shades of red from light to dark
+                            colors.append((0.4 + 0.6 * intensity, 0, 0))  # RGB with varying red
+                        
+                    bars = ax5.barh(range(len(pl_sorted)), pl_sorted['Return'].values, color=colors)
+                    ax5.set_yticks(range(len(pl_sorted)))
+                    ax5.set_yticklabels(pl_sorted['Name'].values)
+                    ax5.set_xlabel('Profit/Loss (RUB)', fontsize=12)
+                    ax5.set_title('Top 15 Profitable and Unprofitable Assets', fontsize=16, fontweight='bold')
                     
-                        # Add value labels
-                        for i, (bar, val) in enumerate(zip(bars, pl_sorted['Return'].values)):
-                            ax5.text(val, i, f' {val:,.0f} RUB', va='center', fontweight='bold')
+                    # Add value labels
+                    for i, (bar, val) in enumerate(zip(bars, pl_sorted['Return'].values)):
+                        ax5.text(val, i, f' {val:,.0f} RUB', va='center', fontweight='bold')
                     
-                        plt.tight_layout()
-                        vis_data['profit_loss'] = fig4
+                    plt.tight_layout()
+                    vis_data['profit_loss'] = fig4
     
         self.report_data['visualizations'] = vis_data
         return vis_data

@@ -19,6 +19,7 @@ from typing import Dict
 warnings.filterwarnings('ignore')
 
 from moex_data_fetcher import MOEXDataFetcher
+from excel_reader import ExcelReader
 from pdf_report import PDFReport
 
 class PortfolioAnalyzer:
@@ -35,7 +36,9 @@ class PortfolioAnalyzer:
         if not self.password:
             raise ValueError("PORTFOLIO_PASSWORD environment variable not set")
         
-        self.portfolio_data: pd.DataFrame 
+        self.portfolio_data: pd.DataFrame
+        self.deposit_data: pd.DataFrame
+        self.dividend_data: pd.DataFrame
         self.returns_data: pd.DataFrame | None = None
         self.report_data: Dict[str, pd.DataFrame] = {}
         self.moex = MOEXDataFetcher()
@@ -65,83 +68,17 @@ class PortfolioAnalyzer:
             with open('temp_decrypted.xlsx', 'wb') as f:
                 f.write(temp.getvalue())
             
-            # Load workbook with openpyxl
-            from openpyxl import load_workbook
-            wb = load_workbook('temp_decrypted.xlsx', data_only=True)
+            reader = ExcelReader('temp_decrypted.xlsx')
+            self.portfolio_data = reader.read_table('Assets', 'Assets')
+            self.deposit_data = reader.read_table('Deposits', 'DepositIncomes')
+            self.dividend_data = reader.read_table('Dividends', 'DividendsIncome')
             
-            # Check if "Assets" sheet exists
-            if 'Assets' not in wb.sheetnames:
-                raise ValueError("Sheet 'Assets' not found in the workbook")
-            
-            # Get the "Assets" sheet
-            sheet = wb['Assets']
-            
-            # Look for named table "Assets" or named range "Assets"            
-            table_range = None
-            
-            # Method 1: Check for Excel tables (ListObjects)
-            if hasattr(sheet, 'tables') and 'Assets' in sheet.tables:
-                # This is an Excel table (ListObject)
-                table = sheet.tables['Assets']
-                table_range = table.ref
-                self.logger.debug(f"Found Excel table 'Assets' at range: {table_range}")
-            
-            # Method 2: Check for named ranges (defined names)
-            if table_range is None and hasattr(wb, 'defined_names'):
-                for defined_name in wb.defined_names:
-                    if defined_name.name == 'Assets':
-                        # Get the range of the named range
-                        destinations = defined_name.destinations
-                        for title, coord in destinations:
-                            if title == 'Assets':  # Range is on Assets sheet
-                                table_range = coord
-                                self.logger.debug(f"Found named range 'Assets' at range: {table_range}")
-                                break
-            
-            if not table_range:
-                raise ValueError("Named table or range 'Assets' not found in the workbook")
-
-            # Extract data from the table range
-            self.logger.debug(f"Loading data from range: {table_range}")
-            from openpyxl.utils import range_boundaries
-            min_col_val, min_row_val, max_col_val, max_row_val = range_boundaries(table_range)                        
-            
-            # Type guard: ensure all values are integers
-            min_col: int = min_col_val if min_col_val is not None else 0
-            min_row: int = min_row_val if min_row_val is not None else 0
-            max_col: int = max_col_val if max_col_val is not None else 0
-            max_row: int = max_row_val if max_row_val is not None else 0
-                
-            # Get headers from first row
-            headers: list[str] = []
-            for col in range(min_col, max_col + 1):
-                cell = sheet.cell(row=min_row, column=col)
-                headers.append(str(cell.value) if cell.value is not None else "")
-                
-            # Get data rows
-            data_rows: list[list[str]] = []
-            for row in range(min_row + 1, max_row + 1):
-                row_data: list[str] = []
-                for col in range(min_col, max_col + 1):
-                    cell = sheet.cell(row=row, column=col)
-                    row_data.append(str(cell.value) if cell.value is not None else "")
-                # Only add non-empty rows
-                if any(cell != "" for cell in row_data):
-                    data_rows.append(row_data)
-                
-            # Create DataFrame
-            if not data_rows:
-                raise ValueError("No data found in the specified table range")
-
-            self.portfolio_data = pd.DataFrame(data_rows, columns=headers)
             # Filter out rows with zero amount
             if 'Amount' in self.portfolio_data.columns:
                 self.portfolio_data = self.portfolio_data[self.portfolio_data['Amount'] != '0']
             self.logger.info(f"Loaded named table/range 'Assets' with {len(self.portfolio_data)} rows")            
-            self.logger.debug(f"Portfolio data:\n{self.portfolio_data.head()}")
 
             # Clean up temporary file
-            wb.close()
             if os.path.exists('temp_decrypted.xlsx'):
                 os.remove('temp_decrypted.xlsx')                    
             

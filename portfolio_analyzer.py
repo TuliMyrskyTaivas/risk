@@ -19,6 +19,7 @@ from typing import Dict
 warnings.filterwarnings('ignore')
 
 from moex_data_fetcher import MOEXDataFetcher
+from moex_g_curve import MOEX_G_Curve
 from excel_reader import ExcelReader
 from pdf_report import PDFReport
 
@@ -286,8 +287,8 @@ class PortfolioAnalyzer:
         skewness = stats.skew(self.returns_data)
         kurtosis = stats.kurtosis(self.returns_data)
         
-        # Sharpe ratio (using Russian risk-free rate - approximate)
-        risk_free_rate = self.moex.fetch_russian_risk_free_rate(1.0) / 252  # annual risk-free rate / 252 days
+        # Sharpe ratio (using Russian risk-free rate - approximate)        
+        risk_free_rate = MOEX_G_Curve().fetch_risk_free_rate(1.0) / 252  # annual risk-free rate / 252 days
         mean_daily_return = np.mean(self.returns_data)
         sharpe_ratio = (mean_daily_return - risk_free_rate) / np.std(self.returns_data) * np.sqrt(252)
         
@@ -435,9 +436,112 @@ class PortfolioAnalyzer:
                     
                     plt.tight_layout()
                     vis_data['profit_loss'] = fig4
+        
+        # 5. Comparative Volatility Chart (Portfolio vs IMOEX)
+        volatility_fig = self.create_comparative_volatility_chart(window_days=30)
+        if volatility_fig is not None:
+            vis_data['comparative_volatility'] = volatility_fig
     
         self.report_data['visualizations'] = vis_data
         return vis_data
+    
+    def create_comparative_volatility_chart(self, window_days: int = 30) -> Optional[plt.Figure]:
+        """
+        Create a comparative volatility chart showing portfolio volatility vs IMOEX index volatility.
+        
+        Parameters:
+        -----------
+        window_days : int
+            Rolling window for volatility calculation (default 30 days)
+        
+        Returns:
+        --------
+        matplotlib.figure.Figure : The chart figure or None if data unavailable
+        """
+        try:
+            # Fetch portfolio returns if not already available
+            if self.returns_data is None:
+                self.generate_returns_data()
+            
+            # Fetch IMOEX historical prices
+            self.logger.info("Fetching IMOEX historical prices for volatility comparison...")
+            imoex_prices = self.moex.get_historical_prices(ticker="IMOEX", days=252)
+            
+            if imoex_prices is None or len(imoex_prices) < 2:
+                self.logger.warning("Could not fetch IMOEX data for volatility comparison")
+                return None
+            
+            # Calculate IMOEX returns
+            imoex_returns = imoex_prices.pct_change().dropna()
+            
+            # Ensure we have enough data
+            if len(imoex_returns) < window_days:
+                self.logger.warning(f"Insufficient IMOEX data: {len(imoex_returns)} days available, {window_days} days required")
+                return None
+            
+            # Calculate rolling volatility for portfolio (annualized)
+            portfolio_returns_series = pd.Series(self.returns_data, index=range(len(self.returns_data)))
+            portfolio_vol_rolling = portfolio_returns_series.rolling(window=window_days).std() * np.sqrt(252) * 100
+            
+            # Calculate rolling volatility for IMOEX (annualized)
+            imoex_vol_rolling = imoex_returns.rolling(window=window_days).std() * np.sqrt(252) * 100
+            
+            # Align the indices by taking the common dates
+            # Create aligned data starting from max(min_dates)
+            common_start = max(len(portfolio_vol_rolling) - len(imoex_vol_rolling), 0)
+            portfolio_vol_aligned = portfolio_vol_rolling.iloc[common_start:].reset_index(drop=True)
+            imoex_vol_aligned = imoex_vol_rolling.reset_index(drop=True)
+            
+            # Ensure same length
+            min_len = min(len(portfolio_vol_aligned), len(imoex_vol_aligned))
+            portfolio_vol_aligned = portfolio_vol_aligned.iloc[-min_len:]
+            imoex_vol_aligned = imoex_vol_aligned.iloc[-min_len:]
+            
+            # Create the chart
+            fig, ax = plt.subplots(figsize=(14, 7))
+            
+            x_axis = np.arange(len(portfolio_vol_aligned))
+            
+            # Plot both volatility lines
+            ax.plot(x_axis, portfolio_vol_aligned.values, linewidth=2.5, label='Portfolio Volatility', 
+                   color='#1f77b4', marker='o', markersize=3, alpha=0.8)
+            ax.plot(x_axis, imoex_vol_aligned.values, linewidth=2.5, label='IMOEX Volatility', 
+                   color='#ff7f0e', marker='s', markersize=3, alpha=0.8)
+            
+            # Add shaded area between curves
+            ax.fill_between(x_axis, portfolio_vol_aligned.values, imoex_vol_aligned.values, 
+                           alpha=0.2, color='gray', label='Difference')
+            
+            # Formatting
+            ax.set_xlabel('Trading Days', fontsize=12, fontweight='bold')
+            ax.set_ylabel('Annualized Volatility (%)', fontsize=12, fontweight='bold')
+            ax.set_title(f'Portfolio vs IMOEX Volatility Comparison ({window_days}-Day Rolling Window)', 
+                        fontsize=16, fontweight='bold')
+            ax.legend(loc='best', fontsize=11)
+            ax.grid(True, alpha=0.3)
+            
+            # Add statistics text
+            portfolio_mean_vol = portfolio_vol_aligned.mean()
+            imoex_mean_vol = imoex_vol_aligned.mean()
+            portfolio_current_vol = portfolio_vol_aligned.iloc[-1]
+            imoex_current_vol = imoex_vol_aligned.iloc[-1]
+            
+            stats_text = f"""Portfolio Avg Vol: {portfolio_mean_vol:.2f}%  |  IMOEX Avg Vol: {imoex_mean_vol:.2f}%
+Current Portfolio Vol: {portfolio_current_vol:.2f}%  |  Current IMOEX Vol: {imoex_current_vol:.2f}%"""
+            
+            ax.text(0.5, -0.12, stats_text, transform=ax.transAxes, 
+                   ha='center', fontsize=10, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
+            
+            plt.tight_layout()
+            
+            self.logger.info(f"Comparative volatility chart created successfully")
+            return fig
+            
+        except Exception as e:
+            self.logger.error(f"Error creating comparative volatility chart: {e}")
+            import traceback
+            self.logger.debug(traceback.format_exc())
+            return None
 
 def generate_pdf_report(analyzer: PortfolioAnalyzer, filename: str = "portfolio_analysis_report.pdf"):
     """Generate comprehensive PDF report"""
@@ -556,6 +660,30 @@ def generate_pdf_report(analyzer: PortfolioAnalyzer, filename: str = "portfolio_
                 
                 fig = vis_data['profit_loss']
                 img_path = os.path.join(temp_dir, 'profit_loss.png')
+                fig.savefig(img_path, format='png', dpi=150, bbox_inches='tight')
+                image_files.append(img_path)
+                
+                pdf.image(img_path, x=20, y=None, w=170)                
+                plt.close(fig)
+            
+            # Comparative Volatility Analysis
+            if 'comparative_volatility' in vis_data:
+                pdf.add_page()
+                pdf.chapter_title("Volatility Analysis: Portfolio vs IMOEX")
+                
+                volatility_text = """
+                This chart compares the rolling 30-day annualized volatility of your portfolio with the IMOEX (Moscow Exchange Index) volatility.
+                This comparison helps you understand how your portfolio's risk profile compares to the broader market.
+                
+                Key insights:
+                - If portfolio volatility is higher than IMOEX, your portfolio is riskier than the market
+                - If portfolio volatility is lower than IMOEX, your portfolio is less risky than the market
+                - The shaded area between the lines shows the volatility difference between your portfolio and the index
+                """
+                pdf.chapter_body(volatility_text)
+                
+                fig = vis_data['comparative_volatility']
+                img_path = os.path.join(temp_dir, 'comparative_volatility.png')
                 fig.savefig(img_path, format='png', dpi=150, bbox_inches='tight')
                 image_files.append(img_path)
                 

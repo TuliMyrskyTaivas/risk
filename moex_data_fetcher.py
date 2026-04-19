@@ -1,6 +1,6 @@
 from moexalgo import Ticker
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Final, Optional
 import pandas as pd
 import sqlite3
 import logging
@@ -54,17 +54,7 @@ class MOEXDataFetcher:
             return None
         dates = [row[0] for row in rows]
         values = [row[1] for row in rows]
-        return pd.Series(values, index=pd.to_datetime(dates))
-
-    def _cache_price(self, ticker: str, date: str, price: float) -> None:
-        self.logger.debug(f"Caching price for {ticker} on {date}: {price} RUB")
-        cursor = self._connection.cursor()
-        cursor.execute(
-            "INSERT OR REPLACE INTO cache (ticker, date, price) VALUES (?, ?, ?)",
-            (ticker, date, price),
-        )
-        self._connection.commit()
-        cursor.close()
+        return pd.Series(values, index=pd.to_datetime(dates))    
 
     def get_current_price(self, ticker: str) -> Optional[float]:
         cache_entry = self._get_latest_cached_price(ticker)
@@ -78,11 +68,9 @@ class MOEXDataFetcher:
             end = datetime.now()
             self.logger.debug(f"Fetching current price for {ticker} from MOEX in range {start} to {end}")
 
-            df : Optional[pd.DataFrame] = ticker_obj.candles(start=start, end=end, period="1D")
-            if df is not None and not df.empty:
-                latest_price = df.iloc[-1]["close"]
-                now_iso = datetime.now().strftime("%Y-%m-%d")
-                self._cache_price(ticker, now_iso, float(latest_price))
+            df : pd.DataFrame = ticker_obj.candles(start=start, end=end, period="1D") 
+            if not df.empty:
+                latest_price = df.iloc[-1]["close"]                
                 return float(latest_price)
             return None
         except Exception as e:
@@ -93,7 +81,13 @@ class MOEXDataFetcher:
         """Fetch historical prices for a given ticker"""
         self.logger.debug(f"Requesting historical prices for {ticker} for the last {days} days")
         end_date = datetime.now()
-        start_date = end_date - timedelta(days=days + 30)
+        # Calculate calendar days needed to cover the requested trading days
+        # Assuming ~252 trading days per year and 365 calendar days
+        TRADING_DAYS_PER_YEAR: Final[int] = 252
+        CALENDAR_DAYS_PER_YEAR: Final[int] = 365
+        calendar_days: Final[int] = int(days * CALENDAR_DAYS_PER_YEAR / TRADING_DAYS_PER_YEAR) + 10  # Add buffer for holidays/weekends
+        start_date = end_date - timedelta(days=calendar_days)
+
         cached_series = self._get_cached_historical_prices(ticker, start_date, end_date)
         if cached_series is not None and len(cached_series) >= days:
             self.logger.debug(f"Using cached historical prices for {ticker} from {cached_series.index.min().date()} to {cached_series.index.max().date()}")
@@ -131,8 +125,10 @@ class MOEXDataFetcher:
                 # Combine with cached
                 if cached_series is not None:
                     combined = pd.concat([cached_series, new_prices]).sort_index()
+                    combined = combined[~combined.index.duplicated(keep='last')] # Remove duplicates if any
                 else:
                     combined = new_prices
+
                 # Cache the new prices
                 data_to_insert = [(ticker, date.date().isoformat(), float(price)) for date, price in new_prices.items()]
                 self.logger.debug(f"Caching {len(data_to_insert)} new historical prices for {ticker} from {fetch_start.date()} to {fetch_end.date()}")
@@ -148,4 +144,4 @@ class MOEXDataFetcher:
                 return cached_series.tail(days) if cached_series is not None and len(cached_series) >= days else None
         except Exception as e:
             self.logger.error(f"Error fetching historical data for {ticker}: {e}")
-            return self._get_cached_historical_prices(ticker, start_date, end_date)
+            return None

@@ -20,7 +20,11 @@ class MOEXDataFetcher:
             "PRIMARY KEY(ticker, date)"
             ")"
         )
-        self._connection.commit()    
+        self._connection.commit()
+
+    def __del__(self):
+        if hasattr(self, '_connection'):
+            self._connection.close()
 
     def _get_latest_cached_price(self, ticker: str) -> Optional[tuple[datetime, float]]:
         cursor = self._connection.cursor()

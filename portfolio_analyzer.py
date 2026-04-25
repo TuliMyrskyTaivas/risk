@@ -15,13 +15,22 @@ import tempfile
 import shutil
 import msoffcrypto
 import logging
-from typing import Dict
+from typing import Dict, List
+from dataclasses import dataclass
 warnings.filterwarnings('ignore')
 
 from moex_data_fetcher import MOEXDataFetcher
 from moex_g_curve import MOEX_G_Curve
 from excel_reader import ExcelReader
 from pdf_report import PDFReport
+
+@dataclass
+class RiskMetrics:
+    volatility: float
+    skewness: float
+    kurtosis: float
+    value_at_risk: Dict[str, float]
+    expected_shortfall: Dict[str, float]
 
 class PortfolioAnalyzer:
     def __init__(self, excel_path: str):
@@ -40,7 +49,9 @@ class PortfolioAnalyzer:
         self.portfolio_data: pd.DataFrame
         self.deposit_data: pd.DataFrame
         self.dividend_data: pd.DataFrame
-        self.returns_data: pd.DataFrame | None = None
+        self.reit_data: pd.DataFrame
+        self.returns_data: np.ndarray = np.array([])
+        self.total_value : float = 0
         self.report_data: Dict[str, pd.DataFrame] = {}
         self.moex = MOEXDataFetcher()
         
@@ -73,7 +84,12 @@ class PortfolioAnalyzer:
             self.portfolio_data = reader.read_table('Assets', 'Assets')
             self.deposit_data = reader.read_table('Deposits', 'DepositIncomes')
             self.dividend_data = reader.read_table('Dividends', 'DividendsIncome')
-            
+            self.reit_data = reader.read_table('REITs', 'AllReitIncome')
+
+            self.logger.info(f"Deposit data available from {self.deposit_data['Date'].min()} to {self.deposit_data['Date'].max()}")
+            self.logger.info(f"Dividend data available from {self.dividend_data['Date'].min()} to {self.dividend_data['Date'].max()}")
+            self.logger.info(f"REIT data available from {self.reit_data['Period'].min()} to {self.reit_data['Period'].max()}")
+
             # Filter out rows with zero amount
             if 'Amount' in self.portfolio_data.columns:
                 self.portfolio_data = self.portfolio_data[self.portfolio_data['Amount'] != '0']
@@ -91,7 +107,20 @@ class PortfolioAnalyzer:
         
         # Clean up data
         self._clean_data()
-        return True        
+        return True
+
+    def _add_weights(self, total_value : float):
+        """Calculate portfolio weights based on current value and return total portfolio value"""
+        if 'Current value' not in self.portfolio_data.columns:
+            raise ValueError("Cannot calculate weights: 'Current value' column not found in portfolio data")
+                
+        if total_value > 0:
+            self.portfolio_data['Weight'] = self.portfolio_data['Current value'] / total_value
+        else:
+            self.logger.warning("Total portfolio value is zero, cannot calculate weights")
+            self.portfolio_data['Weight'] = 0
+
+        return total_value
     
     def _clean_data(self):
         """Clean and prepare the portfolio data"""
@@ -109,7 +138,7 @@ class PortfolioAnalyzer:
         # Check which expected columns are present
         missing_columns = [col for col in expected_columns if col not in self.portfolio_data.columns]
         if missing_columns:
-            self.logger.warning(f"Warning: Missing columns: {missing_columns}")
+            raise ValueError(f"Missing expected columns in portfolio data: {missing_columns}")            
         
         # Convert numeric columns
         numeric_columns = ['Amount', 'Book price', 'Current price', 
@@ -123,84 +152,31 @@ class PortfolioAnalyzer:
                 self.portfolio_data[col] = pd.to_numeric(self.portfolio_data[col], errors='coerce')
         
         # Set currency to RUB if not specified
-        if 'Currency' in self.portfolio_data.columns:
-            self.portfolio_data['Currency'] = 'RUB'
-        else:
-            self.portfolio_data['Currency'] = 'RUB'
-        
-        # Update current prices from MOEX if Code column exists
-        if 'Code' in self.portfolio_data.columns:
-            self.logger.info("Fetching current prices from MOEX...")
-            self._update_prices_from_moex()
-        
-        # Calculate current value based on amount and current price
-        if 'Amount' in self.portfolio_data.columns and 'Current price' in self.portfolio_data.columns:
-            self.portfolio_data['Current value'] = self.portfolio_data['Amount'] * self.portfolio_data['Current price']
-        
-        # Calculate P/L if Book value and Current value exist
-        if 'Book value' in self.portfolio_data.columns and 'Current value' in self.portfolio_data.columns:
-            self.portfolio_data['P/L'] = self.portfolio_data['Current value'] - self.portfolio_data['Book value']
-            self.portfolio_data['P/L %'] = (self.portfolio_data['P/L'] / self.portfolio_data['Book value'] * 100).round(2)
+        self.portfolio_data['Currency'] = 'RUB'                                        
         
         # IMPORTANT: The 'Return' column contains profit in RUB, not percentage
-        # We'll keep it as is and also calculate return percentage
-        if 'Return' in self.portfolio_data.columns and 'Book value' in self.portfolio_data.columns:            
-            # Calculate return percentage from the RUB return
-            # Avoid division by zero and handle infinite values
-            mask = self.portfolio_data['Book value'] != 0
-            self.portfolio_data.loc[mask, 'Return %'] = (self.portfolio_data.loc[mask, 'Return'] / 
-                                                         self.portfolio_data.loc[mask, 'Book value'] * 100).round(2)
-        
-            # Replace any infinite values with NaN
-            self.portfolio_data['Return %'] = self.portfolio_data['Return %'].replace([np.inf, -np.inf], np.nan)    
-            self.logger.debug(f"Calculated return percentages from RUB values")
+        # We'll keep it as is and also calculate return percentage        
+        mask = self.portfolio_data['Book value'] != 0 # Avoid division by zero
+        self.portfolio_data.loc[mask, 'Return %'] = (self.portfolio_data.loc[mask, 'Return'] / 
+                                                     self.portfolio_data.loc[mask, 'Book value'] * 100).round(2)        
+        # Replace any infinite values with NaN
+        self.portfolio_data['Return %'] = self.portfolio_data['Return %'].replace([np.inf, -np.inf], np.nan)            
         
         # Calculate weights based on current value
-        if 'Current value' in self.portfolio_data.columns:
-            total_value = self.portfolio_data['Current value'].sum()
-            self.portfolio_data['Weight'] = self.portfolio_data['Current value'] / total_value
+        self.total_value = self.portfolio_data['Current value'].sum()
+        self._add_weights(self.total_value)
+        self.logger.info(f"Total Portfolio Value: {self.total_value:,.2f} RUB")
             
-            self.logger.info(f"Total Portfolio Value: {total_value:,.2f} RUB")
-            
-            # Store summary data
-            self.report_data['total_value'] = total_value
-            self.report_data['total_book_value'] = self.portfolio_data['Book value'].sum() if 'Book value' in self.portfolio_data.columns else 0
-            self.report_data['total_pl'] = self.portfolio_data['P/L'].sum() if 'P/L' in self.portfolio_data.columns else 0
-            
-            # Total return in RUB
-            if 'Return' in self.portfolio_data.columns:
-                self.report_data['total_return_rub'] = self.portfolio_data['Return'].sum()
-            
-            # Average return percentage
-            if 'Return %' in self.portfolio_data.columns:
-                self.report_data['avg_return_pct'] = self.portfolio_data['Return %'].mean()
-            
-            self.report_data['n_assets'] = len(self.portfolio_data)
-        else:
-            self.logger.warning("Warning: 'Current value' column not found")
-    
-    def _update_prices_from_moex(self):
-        """Update current prices from MOEX for all assets"""                
-        updated_count = 0
-        for idx, row in self.portfolio_data.iterrows():
-            ticker = row['Code']
-            if pd.notna(ticker) and ticker:
-                price = self.moex.get_current_price(ticker)
-                if price is not None:
-                    self.portfolio_data.at[idx, 'Current price'] = price
-                    updated_count += 1
-                    self.logger.debug(f"{ticker}: {price:.2f} RUB")
-                else:
-                    self.logger.warning(f"Could not fetch price for {ticker}")
-        
-        self.logger.info(f"Updated {updated_count} prices from MOEX")
+        # Store summary data            
+        self.report_data['total_book_value'] = self.portfolio_data['Book value'].sum()
+        self.report_data['total_pl'] = self.portfolio_data['P/L'].sum()        
+        self.report_data['total_return_rub'] = self.portfolio_data['Return'].sum()                    
     
     def generate_returns_data(self, time_horizon : int = 1):
         """
         Generate returns data for VaR calculation.
         Prefer actual historical returns from MOEX if available.
-        """
-        portfolio_returns = None
+        """        
         historical_returns : Dict[str, pd.Series] = {}
 
         if 'Code' not in self.portfolio_data.columns:
@@ -223,53 +199,41 @@ class PortfolioAnalyzer:
 
         if not historical_returns:
             raise ValueError("No historical returns data available for any assets. Cannot generate returns data.")
-
-        # Handle duplicate indices by removing duplicates from each series
-        clean_returns : Dict[str, pd.Series] = {}
-        for ticker, returns_series in historical_returns.items():
-            # Remove duplicate index values, keeping the first occurrence                    
-            clean_returns[ticker] = returns_series[~returns_series.index.duplicated(keep='first')]
-                
-        returns_df = pd.DataFrame(clean_returns)
+        
+        returns_df = pd.DataFrame(historical_returns)
         returns_df = returns_df.dropna(axis=0, how='any')
         if returns_df.empty:
             raise ValueError("No valid historical returns data available after cleaning. Cannot generate returns data.")
 
         # Determine portfolio weights for tickers with historical data
-        if 'Weight' in self.portfolio_data.columns:
-            weights = []
-            for ticker in returns_df.columns:
-                mask = self.portfolio_data['Code'] == ticker
-                weights.append(self.portfolio_data.loc[mask, 'Weight'].sum())
-            weights = np.array(weights, dtype=float)
-        else:
-            weights = np.ones(len(returns_df.columns), dtype=float)
+        if 'Weight' not in self.portfolio_data.columns:
+            raise ValueError("Cannot generate returns data: 'Weight' column not found in portfolio data")
+        
+        raw_weights : List[float] = []
+        for ticker in returns_df.columns:
+            mask = self.portfolio_data['Code'] == ticker
+            raw_weights.append(self.portfolio_data.loc[mask, 'Weight'].sum())
 
+        weights = np.array(raw_weights, dtype=float)        
         weights = np.nan_to_num(weights, nan=0.0)
-        weights_sum = weights.sum()
-        if weights_sum > 0:
-            weights = weights / weights_sum
-        else:
-            weights = np.ones(len(returns_df.columns), dtype=float) / len(returns_df.columns)
+        weights = weights / weights.sum()  # Normalize weights        
 
-        portfolio_returns = returns_df.dot(weights)                                
-        self.returns_data = portfolio_returns.values * np.sqrt(time_horizon)
-        return self.returns_data        
+        portfolio_returns = returns_df.dot(weights).values # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
+        self.returns_data = portfolio_returns * np.sqrt(time_horizon)        
     
-    def calculate_risk_metrics(self) -> Dict[str, Dict[str, float]]:
+    def calculate_risk_metrics(self):
         """Calculate all risk metrics"""
-        if self.returns_data is None:
+        if self.returns_data.size == 0:
             self.generate_returns_data()
         
-        risk_metrics : Dict[str, Dict[str, float]] = {}
-        total_value = self.report_data.get('total_value', 1)
+        risk_metrics : Dict[str, Dict[str, float]] = {}        
         
         # VaR at different confidence levels
         for conf in [0.90, 0.95, 0.99]:
             var = np.percentile(self.returns_data, (1 - conf) * 100)
             risk_metrics[f'VaR_{int(conf*100)}'] = {
                 'percentage': var * 100,
-                'value': total_value * abs(var)
+                'value': self.total_value * abs(var)
             }
         
         # Expected Shortfall
@@ -279,11 +243,11 @@ class PortfolioAnalyzer:
             es = tail_returns.mean() if len(tail_returns) > 0 else var_threshold
             risk_metrics[f'ES_{int(conf*100)}'] = {
                 'percentage': es * 100,
-                'value': total_value * abs(es)
+                'value': self.total_value * abs(es)
             }
         
         # Statistics
-        volatility = np.std(self.returns_data) * np.sqrt(252)
+        volatility = np.std(self.returns_data) * np.sqrt(252)        
         skewness = stats.skew(self.returns_data)
         kurtosis = stats.kurtosis(self.returns_data)
         
@@ -307,8 +271,7 @@ class PortfolioAnalyzer:
             'max_drawdown': max_drawdown
         }
         
-        self.report_data['risk_metrics'] = risk_metrics
-        return risk_metrics
+        self.report_data['risk_metrics'] = risk_metrics        
     
     def create_visualizations(self):
         """Create all visualizations for the report"""
@@ -442,8 +405,7 @@ class PortfolioAnalyzer:
         if volatility_fig is not None:
             vis_data['comparative_volatility'] = volatility_fig
     
-        self.report_data['visualizations'] = vis_data
-        return vis_data
+        self.report_data['visualizations'] = vis_data    
     
     def create_comparative_volatility_chart(self, window_days: int = 30) -> Optional[plt.Figure]:
         """
@@ -560,8 +522,7 @@ def generate_pdf_report(analyzer: PortfolioAnalyzer, filename: str = "portfolio_
         # Executive Summary
         pdf.chapter_title("Executive Summary")
         
-        total_return_rub = analyzer.report_data.get('total_return_rub', 0)
-        total_value = analyzer.report_data.get('total_value', 0)
+        total_return_rub = analyzer.report_data.get('total_return_rub', 0)        
         return_pct = (total_return_rub / (analyzer.report_data.get('total_book_value', 1)) * 100) if analyzer.report_data.get('total_book_value', 0) > 0 else 0
         
         summary_text = f"""
@@ -569,12 +530,12 @@ def generate_pdf_report(analyzer: PortfolioAnalyzer, filename: str = "portfolio_
         as of {datetime.now().strftime('%d %B %Y')}.
         
         Executive Summary:
-        - Total Portfolio Value: {analyzer.report_data.get('total_value', 0):,.2f} RUB
+        - Total Portfolio Value: {analyzer.total_value:,.2f} RUB
         - Total Book Value: {analyzer.report_data.get('total_book_value', 0):,.2f} RUB
         - Total P&L: {analyzer.report_data.get('total_pl', 0):,.2f} RUB
         - Total Return (RUB): {total_return_rub:,.2f} RUB
         - Total Return (%): {return_pct:.2f}%
-        - Number of Assets: {analyzer.report_data.get('n_assets', 0)}
+        - Number of Assets: {len(analyzer.portfolio_data)}
         """
         pdf.chapter_body(summary_text)
         
@@ -782,10 +743,10 @@ def main():
     Main function to run the portfolio analysis
     """
     parser = argparse.ArgumentParser(description='Analyze portfolio risk from a password-protected Excel file and generate a PDF report')
-    parser.add_argument('excel_file', help='Path to the password-protected Excel file containing the portfolio data')
-    parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output for debugging')
-    parser.add_argument('--output', '-o', default='portfolio_risk_report.pdf', 
-                       help='Name of the output PDF file (default: portfolio_risk_report.pdf)')
+    parser.add_argument('excel_file', help='Path to the password-protected Excel file containing the portfolio data')    
+    parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output for debugging')    
+    parser.add_argument('--output', '-o', default='portfolio_report.pdf', 
+                       help='Name of the output PDF file (default: portfolio_report.pdf)')
     
     args = parser.parse_args()
     
